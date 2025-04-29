@@ -1,4 +1,4 @@
 (executable
  (public_name blog)
  (name main)
- (libraries blog))
+ (libraries blog dream))
