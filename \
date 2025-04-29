@@ -1,7 +1,7 @@
 open Lwt.Infix
 open Tyxml.Html
 
-let re = Str.regexp "^([^_]+)_([0-9]{4}-[0-9]{2}-[0-9]{2})$"
+let re = Str.regexp "^\\([^_]+\\)_\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\}\\)$"
 
 type post_metadata = { name : string; date : string; path : string }
 
@@ -15,19 +15,8 @@ type post = {
 (* rewrite to array, because pages can be sorted back *)
 let metadata : post_metadata list ref = ref []
 
-let metadata_state_log metadata =
-  metadata
-  |> List.map (fun p ->
-         Printf.sprintf "{name: %s; date: %s; path: %s}" p.name p.date p.path)
-  |> String.concat "\n"
-  |> Printf.sprintf "Metadata state:\n%s"
-
 let rec refresh_loop () =
   let parse_filename filename =
-    Logs_lwt.info (fun m ->
-        m "parse_filename: %s, %s" filename
-          (string_of_bool (Str.string_match re filename 0)))
-    >>= fun _ ->
     if Str.string_match re filename 0 then
       try
         let name = Str.matched_group 1 filename in
@@ -42,8 +31,6 @@ let rec refresh_loop () =
   let get_posts =
     (* must be abstraction of file storage *)
     Lwt_stream.to_list (Lwt_unix.files_of_directory "static") >>= fun files ->
-    Logs_lwt.info (fun m -> m "Files: %s" (String.concat " , " files))
-    >>= fun _ ->
     Lwt_list.fold_left_s
       (fun acc file ->
         parse_filename file >|= function
@@ -64,10 +51,7 @@ let rec refresh_loop () =
   in
 
   Lwt.catch
-    (fun () ->
-      refresh_metadata >>= fun _ ->
-      Logs_lwt.info (fun m ->
-          m "Posts metadata is updated: %s" (metadata_state_log !metadata)))
+    (fun () -> refresh_metadata)
     (fun exn ->
       Logs_lwt.err (fun m ->
           m "refresh_metadata failed: %s" (Printexc.to_string exn)))
@@ -173,7 +157,6 @@ let get_posts_route request =
   Dream.html (Format.asprintf "%a" (pp ()) page_html)
 
 let () =
-  let _ = Lwt.async (fun _ -> refresh_loop ()) in
   Dream.run @@ Dream.logger
   @@ Dream.router
        [

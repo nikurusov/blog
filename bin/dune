@@ -1,4 +1,5 @@
 (executable
  (public_name blog)
  (name main)
- (libraries blog dream))
+ (libraries blog dream omd tyxml)
+ (flags (:standard -w -32 -w -69 -w -26 -w -27)))
