@@ -1,3 +1,50 @@
+/* Global Layout */
+body {
+  font-family: 'Merriweather', serif;
+  background-color: #fefefe;
+  color: #222;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.container {
+  max-width: 700px;
+  margin: 4em auto;
+  padding: 0 1em;
+  text-align: left;
+}
+
+/* Headings */
+h1 {
+  font-size: 2em;
+  margin-bottom: 1em;
+  text-align: center;
+}
+
+h2 {
+  font-weight: 600;
+  margin-bottom: 0.5em;
+}
+
+/* Paragraphs */
+p {
+  line-height: 1.6;
+  margin-bottom: 1em;
+}
+
+/* Links */
+a {
+  color: #1e66a3;
+  text-decoration: none;
+  font-size: 1.05em;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+/* Navbar */
 .site-navbar {
   background: none;
   padding: 1em 0;
@@ -13,14 +60,13 @@
   gap: 2em;
 }
 
-
-.site-navbar li, .site-navbar a {
+.site-navbar li,
+.site-navbar a {
   all: unset;
   display: block;
   padding: 0.5em 1em;
   cursor: pointer;
 }
-
 
 .site-navbar .active {
   background-color: #1e66a3;
@@ -30,4 +76,39 @@
 
 .site-navbar a:hover:not(.active) {
   text-decoration: underline;
+}
+
+/* Post Listing */
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 1.5em 0;
+}
+
+li {
+  margin: 1em 0;     /* small but visible vertical gap */
+  padding: 0;
+}
+
+.post-line {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 1em;
+  margin: 0.3em 0;     /* slight spacing inside the line */
+}
+
+.post-date {
+  color: #888;
+  font-size: 0.9em;
+  font-style: italic;
+  flex-shrink: 0;
+  width: 110px;               /* fixed width for alignment */
+  text-align: right;
+}
+
+.separator {
+  color: #ccc;
+  font-size: 0.9em;
+  margin-right: 0.5em;
 }

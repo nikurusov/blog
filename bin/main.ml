@@ -191,14 +191,7 @@ let site_navbar ~active =
   in
   nav
     ~a:[ a_class [ "site-navbar" ] ]
-    [
-      ul
-        [
-          nav_link "About" "/";
-          nav_link "Blog" "/posts";
-          nav_link "Contact" "/contact";
-        ];
-    ]
+    [ ul [ nav_link "About" "/"; nav_link "Blog" "/posts" ] ]
 
 let common_html_links =
   [
@@ -237,19 +230,14 @@ let get_posts_route request =
                    span
                      ~a:[ a_class [ "post-date" ] ]
                      [ txt (human_readable_date post.metadata.date) ];
-                   h2
-                     [ post_link ~name:post.metadata.name ~id:post.metadata.id ];
+                   span ~a:[ a_class [ "separator" ] ] [ txt "|" ];
+                   post_link ~name:post.metadata.name ~id:post.metadata.id;
                  ];
              ])
          posts_preview)
   in
 
-  let head_html =
-    head
-      (title (txt "Posts"))
-      (common_html_links
-      @ [ link ~rel:[ `Stylesheet ] ~href:"/static/posts.css" () ])
-  in
+  let head_html = head (title (txt "Posts")) common_html_links in
 
   let body_html =
     body
@@ -333,21 +321,14 @@ let get_about_route _request =
       let about_html = markdown_to_html about_md in
       let page =
         html
-          (head
-             (title (txt "About"))
-             (common_html_links
-             @ [ link ~rel:[ `Stylesheet ] ~href:"/static/about.css" () ]))
+          (head (title (txt "About")) common_html_links)
           (body
              [
                site_navbar ~active:"About";
-               div
-                 ~a:[ a_class [ "container" ] ]
-                 [ h1 [ txt "About" ]; Unsafe.data about_html ];
+               div ~a:[ a_class [ "container" ] ] [ Unsafe.data about_html ];
              ])
       in
       Dream.html (Format.asprintf "%a" (pp ()) page))
-
-let get_contact_route _req = Dream.html "<h1>Contact page coming soon.</h1>"
 
 let () =
   let _ = Lwt.async (fun _ -> refresh_loop ()) in
@@ -357,6 +338,5 @@ let () =
          Dream.get "/" get_about_route;
          Dream.get "/posts" get_posts_route;
          Dream.get "/post/:id" get_post_route;
-         Dream.get "/contact" get_contact_route;
          Dream.get "/static/**" (Dream.static "static");
        ]
