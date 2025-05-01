@@ -1,7 +1,9 @@
 open Lwt.Infix
 open Tyxml.Html
 
-let re = Str.regexp "^([^_]+)_([0-9]{4}-[0-9]{2}-[0-9]{2})$"
+(* ^([^_]+)_([0-9]{4}-[0-9]{2}-[0-9]{2})$ *)
+let re =
+  Str.regexp "^\\([^_]+\\)_\\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\\)$"
 
 type post_metadata = { name : string; date : string; path : string }
 
@@ -22,23 +24,22 @@ let metadata_state_log metadata =
   |> String.concat "\n"
   |> Printf.sprintf "Metadata state:\n%s"
 
-let rec refresh_loop () =
-  let parse_filename filename =
-    Logs_lwt.info (fun m ->
-        m "parse_filename: %s, %s" filename
-          (string_of_bool (Str.string_match re filename 0)))
-    >>= fun _ ->
-    if Str.string_match re filename 0 then
-      try
-        let name = Str.matched_group 1 filename in
-        let date = Str.matched_group 2 filename in
-        Lwt.return (Some (name, date, filename))
-      with Not_found ->
-        Logs_lwt.warn (fun m -> m "Can't parse blog name %s" filename)
-        >|= fun _ -> None
-    else Lwt.return_none
-  in
+let parse_filename filename =
+  Logs_lwt.info (fun m ->
+      m "parse_filename: %s, %s" filename
+        (string_of_bool (Str.string_match re filename 0)))
+  >>= fun _ ->
+  if Str.string_match re filename 0 then
+    try
+      let name = Str.matched_group 1 filename in
+      let date = Str.matched_group 2 filename in
+      Lwt.return (Some (name, date, filename))
+    with Not_found ->
+      Logs_lwt.warn (fun m -> m "Can't parse blog name %s" filename)
+      >|= fun _ -> None
+  else Lwt.return_none
 
+let rec refresh_loop () =
   let get_posts =
     (* must be abstraction of file storage *)
     Lwt_stream.to_list (Lwt_unix.files_of_directory "static") >>= fun files ->
@@ -97,7 +98,7 @@ let get_post post_metadata =
     (* if exists then Some path else None *)
     let path = Filename.concat root "picture.jpeg" in
     Lwt_unix.file_exists path >|= fun exists ->
-    if exists then Some path else None
+    if exists then Some ("/" ^ path) else None
   in
 
   Lwt.both get_post_content get_picture_path >|= fun (content_opt, picture) ->
@@ -110,6 +111,7 @@ type rendered_post = {
   date : string;
   content : string;
   picture : string option;
+  id : string;
 }
 
 let render_post post =
@@ -120,6 +122,7 @@ let render_post post =
         date = post.metadata.date;
         content = post.content |> Omd.of_string |> Omd.to_html;
         picture = post.picture;
+        id = post.metadata.path;
       }
   with _ ->
     Logs.warn (fun m ->
@@ -131,11 +134,11 @@ let get_posts_route request =
     Dream.query request "count"
     |> Option.map int_of_string |> Option.value ~default:5
   in
-
   let page =
     Dream.query request "page" |> Option.map int_of_string
     |> Option.value ~default:1
   in
+
   let get_posts_internal =
     let get_rendered_post post_metadata =
       get_post post_metadata >|= function
@@ -148,13 +151,15 @@ let get_posts_route request =
     |> Lwt_list.filter_map_s get_rendered_post
   in
 
+  let post_link ~name ~id = a ~a:[ a_href ("/post/" ^ id) ] [ txt name ] in
+
   get_posts_internal >>= fun posts ->
   let posts_html =
     List.map
       (fun post ->
         div
           [
-            h2 [ txt post.name ];
+            h2 [ post_link ~name:post.name ~id:post.id ];
             p [ txt post.date ];
             (match post.picture with
             | Some pic -> img ~src:pic ~alt:post.name ()
@@ -172,6 +177,50 @@ let get_posts_route request =
   Logs_lwt.info (fun m -> m "test that logging are working") >>= fun _ ->
   Dream.html (Format.asprintf "%a" (pp ()) page_html)
 
+[@@@ocamlformat "disable"]
+let get_post request =
+  (* handle exception *)
+  let path = Dream.param request "id" in
+
+  let post =
+    parse_filename path >>= function
+    | Some (name, date, path) ->
+        get_post { name; date; path } >|= fun post ->
+        Option.bind post render_post
+    | None -> Lwt.return_none
+  in
+
+  let html_page body_content =
+    html (head (title (txt "Head")) []) (body body_content)
+  in
+
+  let post_html post =
+    [
+      div
+        [
+          h2 [ txt post.name ];
+          p [ txt post.date ];
+          (match post.picture with
+          | Some pic -> img ~src:pic ~alt:post.name ()
+          | None -> txt "");
+          Unsafe.data post.content;
+        ];
+    ]
+  in
+
+  let error_page = [ div [ h1 [ txt "This post doesn't exist" ] ] ] in
+
+  let page =
+    post >|= fun post ->
+    Option.fold 
+      ~none:(html_page error_page)
+      ~some:(fun post -> post |> post_html |> html_page)
+      post
+  in
+
+  page >>= fun page -> Dream.html (Format.asprintf "%a" (pp ()) page)
+[@@@ocamlformat "enable"]
+
 let () =
   let _ = Lwt.async (fun _ -> refresh_loop ()) in
   Dream.run @@ Dream.logger
@@ -179,4 +228,6 @@ let () =
        [
          Dream.get "/" (fun request -> Dream.html "Hello, world!");
          Dream.get "/posts" get_posts_route;
+         Dream.get "/post/:id" get_post;
+         Dream.get "/static/**" (Dream.static "static");
        ]
