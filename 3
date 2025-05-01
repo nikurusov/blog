@@ -7,19 +7,17 @@ let post_file_name = "post"
 let post_name_regex =
   Str.regexp "^\\([^_]+\\)_\\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\\)$"
 
-type post_metadata = {
-  title : string;
-  date : string;
-  tags : string list;
-  id : string;
-}
+type post_metadata = { name : string; date : string; id : string }
 [@@deriving show]
 
-type post = { metadata : post_metadata; raw_content : string } [@@deriving show]
+type post_info = { metadata : post_metadata; picture_path : string option }
+[@@deriving show]
+
+type post = { info : post_info; raw_content : string } [@@deriving show]
 
 (* must be abstraction of metadata storage *)
 (* rewrite to array, because pages can be sorted back *)
-let mem_posts_metadata : post_metadata list ref = ref []
+let mem_posts_info : post_info list ref = ref []
 
 let log_file_parsing filename result =
   Logs_lwt.info (fun m ->
@@ -30,19 +28,15 @@ let log_files_in_storage files =
   >|= fun _ -> files
 
 [@@@ocamlformat "disable"]
-let log_refresh_memory_posts_info (posts_info : post_metadata list) =
+let log_refresh_memory_posts_info (posts_info : post_info list) =
   let log =
     posts_info
-    |> List.map show_post_metadata
+    |> List.map show_post_info
     |> String.concat ", "
     |> Printf.sprintf "[ %s ]"
   in
   Logs_lwt.info (fun m -> m "Posts metadata is updated: %s" log)
 [@@@ocamlformat "enable"]
-
-let ptime_to_yyyy_mm_dd t =
-  let (year, month, day), _ = Ptime.to_date_time t in
-  Printf.sprintf "%04d-%02d-%02d" year month day
 
 (* convert yyyy-mm-dd to human format, ex: 6 September 2025 *)
 let human_readable_date str =
@@ -72,63 +66,67 @@ let human_readable_date str =
       Printf.eprintf "Invalid date format: %s\n" str;
       str
 
+let parse_filename filename =
+  let is_post = Str.string_match post_name_regex filename 0 in
+  log_file_parsing filename (string_of_bool is_post) >>= fun _ ->
+  if is_post then
+    try
+      let name = Str.matched_group 1 filename in
+      let date = human_readable_date @@ Str.matched_group 2 filename in
+      Lwt.return (Some (name, date, filename))
+    with Not_found | Failure _ ->
+      Logs_lwt.warn (fun m -> m "Can't parse blog name %s" filename)
+      >|= fun _ -> None
+  else Lwt.return_none
+
 let markdown_to_html md = md |> Omd.of_string |> Omd.to_html
 
-let post_content post_id =
-  let path = Filename.concat storage_directory post_id in
-  Lwt.catch
-    (fun () ->
-      Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
-      Some (post_id, content))
-    (fun _exn ->
-      Logs_lwt.warn (fun m ->
-          m "Failed to read post content: file does not exist (%s)" path)
-      >|= fun () -> None)
-
 let rec refresh_loop () =
-  let get_posts =
-    (* Get only markdown files *)
-    let find_posts files =
-      Lwt_list.filter_p
-        (fun f -> Lwt.return @@ String.ends_with ~suffix:".md" f)
-        files
+  let get_post_picture post_directory =
+    let base_name = Filename.concat post_directory "picture" in
+    let candidates =
+      List.map (fun ext -> base_name ^ ext) [ ".jpeg"; ".png"; ".jpg" ]
     in
-
-    (* Read post content given an id *)
-
-    (* Parse a post from markdown string *)
-    let parse_post (id, post) =
-      try
-        let jekyll = Jekyll_format.of_string_exn post in
-        let fields = Jekyll_format.fields jekyll in
-        let title = Jekyll_format.title_exn fields in
-        let date = ptime_to_yyyy_mm_dd @@ Jekyll_format.date_exn fields in
-
-        let tags =
-          match Jekyll_format.find "tags" fields with
-          | Some (`A lst) -> List.map Yaml.Util.to_string_exn lst
-          | Some (`String s) ->
-              s |> String.split_on_char ',' |> List.map String.trim
-          | _ -> []
-        in
-
-        Lwt.return_some { title; date; tags; id }
-      with Failure err -> Lwt.return_none
+    Lwt.catch
+      (fun () ->
+        Lwt_list.find_s Lwt_unix.file_exists candidates >|= fun path_opt ->
+        Some path_opt)
+      (fun _exn ->
+        Logs_lwt.warn (fun m ->
+            m "No picture found for post in: %s" post_directory)
+        >|= fun () -> None)
+  in
+  let get_post_metadata file =
+    let to_metadata opt =
+      Option.map (fun (name, date, path) -> { name; date; id = path }) opt
+    in
+    parse_filename file >|= to_metadata
+  in
+  let get_posts =
+    let find_posts files =
+      Lwt_list.fold_left_s
+        (fun acc file ->
+          get_post_metadata file >>= function
+          | Some metadata ->
+              get_post_picture (Filename.concat storage_directory metadata.id)
+              >|= fun picture_path -> { metadata; picture_path } :: acc
+          | None -> Lwt.return acc)
+        [] files
     in
 
     (* must be abstraction of file storage *)
     Lwt_stream.to_list (Lwt_unix.files_of_directory storage_directory)
     >>= log_files_in_storage >>= find_posts
-    >>= Lwt_list.filter_map_p post_content
-    >>= Lwt_list.filter_map_p parse_post
   in
 
   let refresh_metadata =
     get_posts >|= fun new_posts ->
     let sorted =
-      List.sort (fun p1 p2 -> String.compare p2.date p1.date) new_posts
+      List.sort
+        (fun p1 p2 -> String.compare p2.metadata.date p1.metadata.date)
+        new_posts
     in
-    mem_posts_metadata := sorted;
+    let () = mem_posts_info := sorted in
     sorted
   in
 
@@ -139,17 +137,50 @@ let rec refresh_loop () =
           m "refresh_metadata failed: %s" (Printexc.to_string exn)))
   >>= fun () -> Lwt_unix.sleep 5.0 >>= refresh_loop
 
-type rendered_post = { metadata : post_metadata; html : string }
+let get_post_with_content post_info =
+  let root_file = Filename.concat storage_directory post_info.metadata.id in
+
+  (* Read post.md content *)
+  let get_post_content =
+    let path = Filename.concat root_file "post.md" in
+    Lwt.catch
+      (fun () ->
+        Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
+        Some content)
+      (fun _exn ->
+        Logs_lwt.warn (fun m ->
+            m "Failed to read post content: file does not exist (%s)" path)
+        >|= fun () -> None)
+  in
+
+  get_post_content >|= fun content_opt ->
+  Option.map
+    (fun content -> { info = post_info; raw_content = content })
+    content_opt
+
+type rendered_post = {
+  name : string;
+  date : string;
+  content : string;
+  picture_path : string option;
+  id : string;
+}
 
 let make_uri_absolute picture_uri = "/" ^ picture_uri
 
-let render_post metadata raw_jekyll =
+let render_post post =
   try
-    let jekyll = Jekyll_format.of_string_exn raw_jekyll in
-    let markdown = Jekyll_format.body jekyll in
-    Some { metadata; html = markdown_to_html markdown }
+    Some
+      {
+        name = post.info.metadata.name;
+        date = post.info.metadata.date;
+        content = markdown_to_html post.raw_content;
+        picture_path = post.info.picture_path;
+        id = post.info.metadata.id;
+      }
   with _ ->
-    Logs.warn (fun m -> m "Failed to parse markdown for post: %s" metadata.id);
+    Logs.warn (fun m ->
+        m "Failed to parse markdown for post: %s" post.info.metadata.id);
     None
 
 let site_navbar ~active =
@@ -182,7 +213,7 @@ let get_posts_route request =
     |> Option.value ~default:1
   in
   let posts_preview =
-    !mem_posts_metadata
+    !mem_posts_info
     |> List.drop ((page - 1) * posts_count)
     |> List.take posts_count
   in
@@ -200,9 +231,9 @@ let get_posts_route request =
                  [
                    span
                      ~a:[ a_class [ "post-date" ] ]
-                     [ txt (human_readable_date post.date) ];
+                     [ txt (human_readable_date post.metadata.date) ];
                    span ~a:[ a_class [ "separator" ] ] [ txt "|" ];
-                   post_link ~name:post.title ~id:post.id;
+                   post_link ~name:post.metadata.name ~id:post.metadata.id;
                  ];
              ])
          posts_preview)
@@ -230,25 +261,28 @@ let get_post_route request =
   let id = Dream.param request "id" in
 
   let post =
-    match List.find_opt (fun m -> m.id = id) !mem_posts_metadata with
-    | Some m ->
-      post_content m.id 
-      >|= Option.fold ~none:None ~some: (fun (_, raw_content) ->  render_post m raw_content)
+    match List.find_opt (fun info -> info.metadata.id = id) !mem_posts_info with
+    | Some info ->
+        get_post_with_content info >|= fun post ->
+        Option.bind post render_post
     | None ->
         Lwt.return_none
     in
 
-  let html_page _body =
-    html (head (title (txt "Head")) []) (body _body)
+  let html_page body_content =
+    html (head (title (txt "Head")) []) (body body_content)
   in
 
   let post_html post =
     [
       div
         [
-          h2 [ txt post.metadata.title ];
-          p [ txt post.metadata.date ];
-          Unsafe.data post.html;
+          h2 [ txt post.name ];
+          p [ txt post.date ];
+          (match post.picture_path with
+          | Some pic -> img ~src:(make_uri_absolute pic) ~alt:post.name ()
+          | None -> txt "");
+          Unsafe.data post.content;
         ];
     ]
   in
