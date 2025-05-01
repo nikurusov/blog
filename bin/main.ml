@@ -1,7 +1,7 @@
 open Lwt.Infix
 open Tyxml.Html
 
-let storage_directory = "static"
+let storage_directory = Filename.concat "static" "storage"
 let picture_file_name = "picture"
 let post_file_name = "post"
 
@@ -39,15 +39,43 @@ let log_refresh_memory_posts_info (posts_info : post_info list) =
   Logs_lwt.info (fun m -> m "Posts metadata is updated: %s" log)
 [@@@ocamlformat "enable"]
 
+(* convert yyyy-mm-dd to human format, ex: 6 September 2025 *)
+let human_readable_date str =
+  match String.split_on_char '-' str with
+  | [ year; month; day ] ->
+      let month_names =
+        [|
+          "January";
+          "February";
+          "March";
+          "April";
+          "May";
+          "June";
+          "July";
+          "August";
+          "September";
+          "October";
+          "November";
+          "December";
+        |]
+      in
+      let month_num = int_of_string month in
+      let day_num = int_of_string day in
+      let year_num = int_of_string year in
+      Printf.sprintf "%d %s %d" day_num month_names.(month_num - 1) year_num
+  | _ ->
+      Printf.eprintf "Invalid date format: %s\n" str;
+      str
+
 let parse_filename filename =
   let is_post = Str.string_match post_name_regex filename 0 in
   log_file_parsing filename (string_of_bool is_post) >>= fun _ ->
   if is_post then
     try
       let name = Str.matched_group 1 filename in
-      let date = Str.matched_group 2 filename in
+      let date = human_readable_date @@ Str.matched_group 2 filename in
       Lwt.return (Some (name, date, filename))
-    with Not_found ->
+    with Not_found | Failure _ ->
       Logs_lwt.warn (fun m -> m "Can't parse blog name %s" filename)
       >|= fun _ -> None
   else Lwt.return_none
@@ -172,25 +200,59 @@ let get_posts_route request =
   let post_link ~name ~id = a ~a:[ a_href ("/post/" ^ id) ] [ txt name ] in
 
   let posts_html =
-    List.map
-      (fun post ->
-        div
-          [
-            h2 [ post_link ~name:post.metadata.name ~id:post.metadata.id ];
-            p [ txt post.metadata.date ];
-            (match post.picture_path with
-            | Some pic ->
-                img ~src:(make_uri_absolute pic) ~alt:post.metadata.name ()
-            | None -> txt "");
-          ])
-      posts_preview
+    ul
+      (List.map
+         (fun post ->
+           li
+             [
+               div
+                 ~a:[ a_class [ "post-line" ] ]
+                 [
+                   span
+                     ~a:[ a_class [ "post-date" ] ]
+                     [ txt (human_readable_date post.metadata.date) ];
+                   h2
+                     [ post_link ~name:post.metadata.name ~id:post.metadata.id ];
+                 ];
+             ])
+         posts_preview)
   in
 
-  let page_html =
-    html
-      (head (title (txt "Posts")) [])
-      (body (h1 [ txt "Blog Posts" ] :: posts_html))
+  let about_section =
+    div
+      [
+        h2 [ txt "About" ];
+        p
+          [
+            txt
+              "Welcome to my minimal OCaml blog! Posts below are rendered from \
+               Markdown.";
+          ];
+      ]
   in
+
+  let head_html =
+    head
+      (title (txt "Posts"))
+      [
+        link ~rel:[ `Stylesheet ]
+          ~href:
+            "https://fonts.googleapis.com/css2?family=Merriweather&display=swap"
+          ();
+        link ~rel:[ `Stylesheet ] ~href:"/static/posts.css" ();
+      ]
+  in
+
+  let body_html =
+    body
+      [
+        div
+          ~a:[ a_class [ "container" ] ]
+          (about_section :: h1 [ txt "Blog Posts" ] :: [ posts_html ]);
+      ]
+  in
+
+  let page_html = html head_html body_html in
 
   Logs_lwt.info (fun m -> m "test that logging are working") >>= fun _ ->
   Dream.html (Format.asprintf "%a" (pp ()) page_html)

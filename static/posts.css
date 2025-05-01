@@ -1,0 +1,53 @@
+body {
+  font-family: 'Merriweather', serif;
+  background-color: #fefefe;
+  color: #222;
+  margin: 0;
+  padding: 0;
+  text-align: center;
+}
+
+.container {
+  max-width: 700px;
+  margin: 3em auto;
+  padding: 0 1em;
+}
+
+h1, h2 {
+  font-weight: 600;
+  margin-bottom: 0.5em;
+}
+
+ul {
+  list-style: none;
+  padding: 0;
+  margin: 2em 0;
+}
+
+li {
+  padding: 1em 0;
+  border-bottom: 1px solid #ddd;
+}
+
+.post-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.post-date {
+  color: #999;
+  font-size: 0.9em;
+  font-style: italic;
+  flex-shrink: 0;
+}
+
+a {
+  color: #1e66a3;
+  text-decoration: none;
+  font-size: 1.1em;
+}
+
+a:hover {
+  text-decoration: underline;
+}
