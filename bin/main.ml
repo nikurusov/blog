@@ -1,12 +1,8 @@
 open Lwt.Infix
 
 let storage_directory = Filename.concat "static" "posts"
-let picture_file_name = "picture"
-let post_file_name = "post"
 
-let post_name_regex =
-  Str.regexp "^\\([^_]+\\)_\\([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\\)$"
-
+(* === Types === *)
 type post_metadata = {
   title : string;
   date : string;
@@ -15,36 +11,16 @@ type post_metadata = {
 }
 [@@deriving show]
 
-type post = { metadata : post_metadata; raw_content : string } [@@deriving show]
+type rendered_post = { metadata : post_metadata; html : string }
 
-(* must be abstraction of metadata storage *)
-(* rewrite to array, because pages can be sorted back *)
+(* === In-Memory Storage === *)
 let mem_posts_metadata : post_metadata list ref = ref []
 
-let log_file_parsing filename result =
-  Logs_lwt.info (fun m ->
-      m "Parsing: filename - %s, result - %s" filename result)
-
-let log_files_in_storage files =
-  Logs_lwt.info (fun m -> m "Files: %s" (String.concat " , " files))
-  >|= fun _ -> files
-
-[@@@ocamlformat "disable"]
-let log_refresh_memory_posts_info (posts_info : post_metadata list) =
-  let log =
-    posts_info
-    |> List.map show_post_metadata
-    |> String.concat ", "
-    |> Printf.sprintf "[ %s ]"
-  in
-  Logs_lwt.info (fun m -> m "Posts metadata is updated: %s" log)
-[@@@ocamlformat "enable"]
-
+(* === Utilities === *)
 let ptime_to_yyyy_mm_dd t =
   let (year, month, day), _ = Ptime.to_date_time t in
   Printf.sprintf "%04d-%02d-%02d" year month day
 
-(* convert yyyy-mm-dd to human format, ex: 6 September 2025 *)
 let human_readable_date str =
   match String.split_on_char '-' str with
   | [ year; month; day ] ->
@@ -68,9 +44,7 @@ let human_readable_date str =
       let day_num = int_of_string day in
       let year_num = int_of_string year in
       Printf.sprintf "%d %s %d" day_num month_names.(month_num - 1) year_num
-  | _ ->
-      Printf.eprintf "Invalid date format: %s\n" str;
-      str
+  | _ -> str
 
 let markdown_to_html md = md |> Omd.of_string |> Omd.to_html
 
@@ -80,80 +54,66 @@ let post_content post_id =
     (fun () ->
       Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
       Some (post_id, content))
-    (fun _exn ->
-      Logs_lwt.warn (fun m ->
-          m "Failed to read post content: file does not exist (%s)" path)
-      >|= fun () -> None)
+    (fun _exn -> Lwt.return_none)
 
+(* === Refresh Loop === *)
 let rec refresh_loop () =
   let get_posts =
-    (* Get only markdown files *)
     let find_posts files =
       Lwt_list.filter_p
-        (fun f -> Lwt.return @@ String.ends_with ~suffix:".md" f)
+        (fun f -> Lwt.return (Filename.check_suffix f ".md"))
         files
     in
 
-    (* Read post content given an id *)
-
-    (* Parse a post from markdown string *)
     let parse_post (id, post) =
       try
         let jekyll = Jekyll_format.of_string_exn post in
         let fields = Jekyll_format.fields jekyll in
         let title = Jekyll_format.title_exn fields in
         let date = ptime_to_yyyy_mm_dd @@ Jekyll_format.date_exn fields in
-
         let tags =
           match Jekyll_format.find "tags" fields with
           | Some (`A lst) -> List.map Yaml.Util.to_string_exn lst
           | Some (`String s) ->
-              s |> String.split_on_char ',' |> List.map String.trim
+              String.split_on_char ',' s |> List.map String.trim
           | _ -> []
         in
-
         Lwt.return_some { title; date; tags; id }
-      with Failure err -> Lwt.return_none
+      with _ -> Lwt.return_none
     in
 
-    (* must be abstraction of file storage *)
     Lwt_stream.to_list (Lwt_unix.files_of_directory storage_directory)
-    >>= log_files_in_storage >>= find_posts
+    >>= find_posts
     >>= Lwt_list.filter_map_p post_content
     >>= Lwt_list.filter_map_p parse_post
   in
 
   let refresh_metadata =
-    get_posts >|= fun new_posts ->
-    let sorted =
-      List.sort (fun p1 p2 -> String.compare p2.date p1.date) new_posts
-    in
+    get_posts >|= fun posts ->
+    let sorted = List.sort (fun a b -> String.compare b.date a.date) posts in
     mem_posts_metadata := sorted;
     sorted
   in
 
   Lwt.catch
-    (fun () -> refresh_metadata >>= log_refresh_memory_posts_info)
+    (fun () -> refresh_metadata >|= fun _ -> ())
     (fun exn ->
       Logs_lwt.err (fun m ->
           m "refresh_metadata failed: %s" (Printexc.to_string exn)))
   >>= fun () -> Lwt_unix.sleep 5.0 >>= refresh_loop
 
-type rendered_post = { metadata : post_metadata; html : string }
-
-let make_uri_absolute picture_uri = "/" ^ picture_uri
-
+(* === Rendering === *)
 let render_post metadata raw_jekyll =
   try
     let jekyll = Jekyll_format.of_string_exn raw_jekyll in
     let markdown = Jekyll_format.body jekyll in
     Some { metadata; html = markdown_to_html markdown }
-  with _ ->
-    Logs.warn (fun m -> m "Failed to parse markdown for post: %s" metadata.id);
-    None
+  with _ -> None
+
+(* === HTML === *)
+open Tyxml.Html
 
 let site_navbar ~active =
-  let open Tyxml.Html in
   let nav_link name path =
     let cls = if active = name then [ a_class [ "active" ] ] else [] in
     li [ a ~a:(a_href path :: cls) [ txt name ] ]
@@ -163,7 +123,6 @@ let site_navbar ~active =
     [ ul [ nav_link "About" "/"; nav_link "Blog" "/posts" ] ]
 
 let common_html_links =
-  let open Tyxml.Html in
   [
     link ~rel:[ `Stylesheet ]
       ~href:"https://fonts.googleapis.com/css2?family=Merriweather&display=swap"
@@ -171,21 +130,8 @@ let common_html_links =
     link ~rel:[ `Stylesheet ] ~href:"/static/style.css" ();
   ]
 
-let get_posts_route request =
-  let open Tyxml.Html in
-  let posts_count =
-    Dream.query request "count"
-    |> Option.map int_of_string |> Option.value ~default:5
-  in
-  let page =
-    Dream.query request "page" |> Option.map int_of_string
-    |> Option.value ~default:1
-  in
-  let posts_preview =
-    !mem_posts_metadata
-    |> List.drop ((page - 1) * posts_count)
-    |> List.take posts_count
-  in
+let get_posts_route _request =
+  let posts_preview = !mem_posts_metadata in
 
   let post_link ~name ~id = a ~a:[ a_href ("/post/" ^ id) ] [ txt name ] in
 
@@ -208,87 +154,51 @@ let get_posts_route request =
          posts_preview)
   in
 
-  let head_html = head (title (txt "Posts")) common_html_links in
-
-  let body_html =
-    body
-      [
-        site_navbar ~active:"Blog";
-        div ~a:[ a_class [ "container" ] ] (h1 [ txt "Blog" ] :: [ posts_html ]);
-      ]
+  let page_html =
+    html
+      (head (title (txt "Posts")) common_html_links)
+      (body
+         [
+           site_navbar ~active:"Blog";
+           div ~a:[ a_class [ "container" ] ] [ h1 [ txt "Blog" ]; posts_html ];
+         ])
   in
-
-  let page_html = html head_html body_html in
-
-  Logs_lwt.info (fun m -> m "test that logging are working") >>= fun _ ->
   Dream.html (Format.asprintf "%a" (pp ()) page_html)
 
-[@@@ocamlformat "disable"]
 let get_post_route request =
-  let open Tyxml.Html in
-  (* handle exception *)
   let id = Dream.param request "id" in
-
-  let post =
-    match List.find_opt (fun m -> m.id = id) !mem_posts_metadata with
-    | Some m ->
-      post_content m.id 
-      >|= Option.fold ~none:None ~some: (fun (_, raw_content) ->  render_post m raw_content)
-    | None ->
-        Lwt.return_none
-    in
-
-  let html_page _body =
-    html (head (title (txt "Head")) []) (body _body)
-  in
-
-  let post_html post =
-    [
-      div
-        [
-          h2 [ txt post.metadata.title ];
-          p [ txt post.metadata.date ];
-          Unsafe.data post.html;
-        ];
-    ]
-  in
-
-  let error_page = [ div [ h1 [ txt "This post doesn't exist" ] ] ] in
-
-  let page =
-    post >|= fun post ->
-    Option.fold 
-      ~none:(html_page error_page)
-      ~some:(fun post -> post |> post_html |> html_page)
-      post
-  in
-
-  page >>= fun page -> Dream.html (Format.asprintf "%a" (pp ()) page)
-[@@@ocamlformat "enable"]
-
-let on_none_not_found_response (opt : 'a option)
-    (f : 'a -> Dream.response Lwt.t) : Dream.response Lwt.t =
-  match opt with
-  | Some x -> f x
-  | None -> Dream.html ~status:`Not_Found "<h1>404 Not Found</h1>"
+  match List.find_opt (fun m -> m.id = id) !mem_posts_metadata with
+  | Some metadata -> (
+      post_content metadata.id >>= function
+      | Some (_, raw) -> (
+          match render_post metadata raw with
+          | Some post ->
+              let page =
+                html
+                  (head (title (txt post.metadata.title)) common_html_links)
+                  (body
+                     [
+                       site_navbar ~active:"Blog";
+                       div
+                         ~a:[ a_class [ "container" ] ]
+                         [
+                           h2 [ txt post.metadata.title ];
+                           p [ txt post.metadata.date ];
+                           Unsafe.data post.html;
+                         ];
+                     ])
+              in
+              Dream.html (Format.asprintf "%a" (pp ()) page)
+          | None -> Dream.html ~status:`Not_Found "<h1>Render error</h1>")
+      | None -> Dream.html ~status:`Not_Found "<h1>Post not found</h1>")
+  | None -> Dream.html ~status:`Not_Found "<h1>Post not found</h1>"
 
 let get_about_route _request =
-  let open Tyxml.Html in
-  let get_about_md =
-    let path = Filename.concat "static" "about.md" in
-    Lwt.catch
-      (fun () ->
-        Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
-        Some content)
-      (fun _exn ->
-        Logs_lwt.warn (fun m ->
-            m "Failed to read 'about.md': file does not exist (%s)" path)
-        >|= fun () -> None)
-  in
-
-  get_about_md >>= fun opt ->
-  on_none_not_found_response opt (fun about_md ->
-      let about_html = markdown_to_html about_md in
+  let path = Filename.concat "static" "about.md" in
+  Lwt.catch
+    (fun () ->
+      Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >>= fun content ->
+      let about_html = markdown_to_html content in
       let page =
         html
           (head (title (txt "About")) common_html_links)
@@ -299,6 +209,7 @@ let get_about_route _request =
              ])
       in
       Dream.html (Format.asprintf "%a" (pp ()) page))
+    (fun _ -> Dream.html ~status:`Not_Found "<h1>About page not found</h1>")
 
 let () =
   let _ = Lwt.async (fun _ -> refresh_loop ()) in
