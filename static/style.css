@@ -1,0 +1,33 @@
+.site-navbar {
+  background: none;
+  padding: 1em 0;
+  text-align: center;
+  margin-bottom: 2em;
+}
+
+.site-navbar ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: inline-flex;
+  gap: 2em;
+}
+
+
+.site-navbar li, .site-navbar a {
+  all: unset;
+  display: block;
+  padding: 0.5em 1em;
+  cursor: pointer;
+}
+
+
+.site-navbar .active {
+  background-color: #1e66a3;
+  color: white;
+  border-radius: 4px;
+}
+
+.site-navbar a:hover:not(.active) {
+  text-decoration: underline;
+}

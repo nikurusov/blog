@@ -80,6 +80,8 @@ let parse_filename filename =
       >|= fun _ -> None
   else Lwt.return_none
 
+let markdown_to_html md = md |> Omd.of_string |> Omd.to_html
+
 let rec refresh_loop () =
   let get_post_picture post_directory =
     let base_name = Filename.concat post_directory "picture" in
@@ -173,7 +175,7 @@ let render_post post =
       {
         name = post.info.metadata.name;
         date = post.info.metadata.date;
-        content = post.raw_content |> Omd.of_string |> Omd.to_html;
+        content = markdown_to_html post.raw_content;
         picture_path = post.info.picture_path;
         id = post.info.metadata.id;
       }
@@ -181,6 +183,30 @@ let render_post post =
     Logs.warn (fun m ->
         m "Failed to parse markdown for post: %s" post.info.metadata.id);
     None
+
+let site_navbar ~active =
+  let nav_link name path =
+    let cls = if active = name then [ a_class [ "active" ] ] else [] in
+    li [ a ~a:(a_href path :: cls) [ txt name ] ]
+  in
+  nav
+    ~a:[ a_class [ "site-navbar" ] ]
+    [
+      ul
+        [
+          nav_link "About" "/";
+          nav_link "Blog" "/posts";
+          nav_link "Contact" "/contact";
+        ];
+    ]
+
+let common_html_links =
+  [
+    link ~rel:[ `Stylesheet ]
+      ~href:"https://fonts.googleapis.com/css2?family=Merriweather&display=swap"
+      ();
+    link ~rel:[ `Stylesheet ] ~href:"/static/style.css" ();
+  ]
 
 let get_posts_route request =
   let posts_count =
@@ -218,37 +244,18 @@ let get_posts_route request =
          posts_preview)
   in
 
-  let about_section =
-    div
-      [
-        h2 [ txt "About" ];
-        p
-          [
-            txt
-              "Welcome to my minimal OCaml blog! Posts below are rendered from \
-               Markdown.";
-          ];
-      ]
-  in
-
   let head_html =
     head
       (title (txt "Posts"))
-      [
-        link ~rel:[ `Stylesheet ]
-          ~href:
-            "https://fonts.googleapis.com/css2?family=Merriweather&display=swap"
-          ();
-        link ~rel:[ `Stylesheet ] ~href:"/static/posts.css" ();
-      ]
+      (common_html_links
+      @ [ link ~rel:[ `Stylesheet ] ~href:"/static/posts.css" () ])
   in
 
   let body_html =
     body
       [
-        div
-          ~a:[ a_class [ "container" ] ]
-          (about_section :: h1 [ txt "Blog Posts" ] :: [ posts_html ]);
+        site_navbar ~active:"Blog";
+        div ~a:[ a_class [ "container" ] ] (h1 [ txt "Blog" ] :: [ posts_html ]);
       ]
   in
 
@@ -258,7 +265,7 @@ let get_posts_route request =
   Dream.html (Format.asprintf "%a" (pp ()) page_html)
 
 [@@@ocamlformat "disable"]
-let get_post request =
+let get_post_route request =
   (* handle exception *)
   let id = Dream.param request "id" in
 
@@ -302,13 +309,54 @@ let get_post request =
   page >>= fun page -> Dream.html (Format.asprintf "%a" (pp ()) page)
 [@@@ocamlformat "enable"]
 
+let on_none_not_found_response (opt : 'a option)
+    (f : 'a -> Dream.response Lwt.t) : Dream.response Lwt.t =
+  match opt with
+  | Some x -> f x
+  | None -> Dream.html ~status:`Not_Found "<h1>404 Not Found</h1>"
+
+let get_about_route _request =
+  let get_about_md =
+    let path = Filename.concat "static" "about.md" in
+    Lwt.catch
+      (fun () ->
+        Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
+        Some content)
+      (fun _exn ->
+        Logs_lwt.warn (fun m ->
+            m "Failed to read 'about.md': file does not exist (%s)" path)
+        >|= fun () -> None)
+  in
+
+  get_about_md >>= fun opt ->
+  on_none_not_found_response opt (fun about_md ->
+      let about_html = markdown_to_html about_md in
+      let page =
+        html
+          (head
+             (title (txt "About"))
+             (common_html_links
+             @ [ link ~rel:[ `Stylesheet ] ~href:"/static/about.css" () ]))
+          (body
+             [
+               site_navbar ~active:"About";
+               div
+                 ~a:[ a_class [ "container" ] ]
+                 [ h1 [ txt "About" ]; Unsafe.data about_html ];
+             ])
+      in
+      Dream.html (Format.asprintf "%a" (pp ()) page))
+
+let get_contact_route _req = Dream.html "<h1>Contact page coming soon.</h1>"
+
 let () =
   let _ = Lwt.async (fun _ -> refresh_loop ()) in
   Dream.run @@ Dream.logger
   @@ Dream.router
        [
-         Dream.get "/" (fun request -> Dream.html "Hello, world!");
+         Dream.get "/" get_about_route;
          Dream.get "/posts" get_posts_route;
-         Dream.get "/post/:id" get_post;
+         Dream.get "/post/:id" get_post_route;
+         Dream.get "/contact" get_contact_route;
          Dream.get "/static/**" (Dream.static "static");
        ]
