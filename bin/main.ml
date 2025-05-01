@@ -182,8 +182,18 @@ let get_post_route request =
                        div
                          ~a:[ a_class [ "container" ] ]
                          [
-                           h2 [ txt post.metadata.title ];
-                           p [ txt post.metadata.date ];
+                           div
+                             ~a:[ a_class [ "post-header" ] ]
+                             [
+                               span
+                                 ~a:[ a_class [ "post-date" ] ]
+                                 [
+                                   txt (human_readable_date post.metadata.date);
+                                 ];
+                               h1
+                                 ~a:[ a_class [ "post-title" ] ]
+                                 [ txt post.metadata.title ];
+                             ];
                            Unsafe.data post.html;
                          ];
                      ])

@@ -112,3 +112,19 @@ li {
   font-size: 0.9em;
   margin-right: 0.5em;
 }
+
+
+.post-header {
+  text-align: center;
+}
+
+.post-title {
+  font-size: 2em;
+  font-weight: 600;
+}
+
+.post-date {
+  font-size: 1.1em;
+  color: #888;
+  font-style: italic;
+}
