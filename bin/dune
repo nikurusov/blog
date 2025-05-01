@@ -1,5 +1,6 @@
 (executable
  (public_name blog)
  (name main)
+ (preprocess (pps ppx_deriving.show))
  (libraries blog dream omd tyxml)
  (flags (:standard -w -32 -w -69 -w -26 -w -27)))
