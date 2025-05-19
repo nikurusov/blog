@@ -1,0 +1,6 @@
+(library
+ (name blog__storage)
+ (public_name blog.storage)
+ (libraries
+    blog.model blog.parser lwt lwt.unix logs.lwt jekyll-format))
+

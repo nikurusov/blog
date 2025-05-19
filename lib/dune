@@ -1,4 +1,5 @@
 (library
- (name blog)
- (libraries lwt lwt.unix logs.lwt omd  jekyll-format)
+ (public_name blog)
+ (wrapped false)
+ (libraries blog.model blog.storage lwt lwt.unix logs.lwt omd jekyll-format)
 )

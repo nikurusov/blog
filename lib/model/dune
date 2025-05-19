@@ -1,0 +1,5 @@
+(library
+ (name blog__model)
+ (public_name blog.model)
+ (wrapped false)
+)

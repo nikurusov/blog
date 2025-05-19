@@ -1,25 +1,5 @@
 open Lwt.Infix
-
-let storage_directory = Filename.concat "static" "posts"
-
-(* === Types === *)
-type post_metadata = {
-  title : string;
-  date : string;
-  tags : string list;
-  id : string;
-}
-[@@deriving show]
-
-type rendered_post = { metadata : post_metadata; html : string }
-
-(* === In-Memory Storage === *)
-let mem_posts_metadata : post_metadata list ref = ref []
-
-(* === Utilities === *)
-let ptime_to_yyyy_mm_dd t =
-  let (year, month, day), _ = Ptime.to_date_time t in
-  Printf.sprintf "%04d-%02d-%02d" year month day
+open Post
 
 let human_readable_date str =
   match String.split_on_char '-' str with
@@ -48,68 +28,6 @@ let human_readable_date str =
 
 let markdown_to_html md = md |> Omd.of_string |> Omd.to_html
 
-let post_content post_id =
-  let path = Filename.concat storage_directory post_id in
-  Lwt.catch
-    (fun () ->
-      Lwt_io.with_file ~mode:Lwt_io.Input path Lwt_io.read >|= fun content ->
-      Some (post_id, content))
-    (fun _exn -> Lwt.return_none)
-
-(* === Refresh Loop === *)
-let rec refresh_loop () =
-  let get_posts =
-    let find_posts files =
-      Lwt_list.filter_p
-        (fun f -> Lwt.return (Filename.check_suffix f ".md"))
-        files
-    in
-
-    let parse_post (id, post) =
-      try
-        let jekyll = Jekyll_format.of_string_exn post in
-        let fields = Jekyll_format.fields jekyll in
-        let title = Jekyll_format.title_exn fields in
-        let date = ptime_to_yyyy_mm_dd @@ Jekyll_format.date_exn fields in
-        let tags =
-          match Jekyll_format.find "tags" fields with
-          | Some (`A lst) -> List.map Yaml.Util.to_string_exn lst
-          | Some (`String s) ->
-              String.split_on_char ',' s |> List.map String.trim
-          | _ -> []
-        in
-        Lwt.return_some { title; date; tags; id }
-      with _ -> Lwt.return_none
-    in
-
-    Lwt_stream.to_list (Lwt_unix.files_of_directory storage_directory)
-    >>= find_posts
-    >>= Lwt_list.filter_map_p post_content
-    >>= Lwt_list.filter_map_p parse_post
-  in
-
-  let refresh_metadata =
-    get_posts >|= fun posts ->
-    let sorted = List.sort (fun a b -> String.compare b.date a.date) posts in
-    mem_posts_metadata := sorted;
-    sorted
-  in
-
-  Lwt.catch
-    (fun () -> refresh_metadata >|= fun _ -> ())
-    (fun exn ->
-      Logs_lwt.err (fun m ->
-          m "refresh_metadata failed: %s" (Printexc.to_string exn)))
-  >>= fun () -> Lwt_unix.sleep 5.0 >>= refresh_loop
-
-(* === Rendering === *)
-let render_post metadata raw_jekyll =
-  try
-    let jekyll = Jekyll_format.of_string_exn raw_jekyll in
-    let markdown = Jekyll_format.body jekyll in
-    Some { metadata; html = markdown_to_html markdown }
-  with _ -> None
-
 (* === HTML === *)
 open Tyxml.Html
 
@@ -131,14 +49,14 @@ let common_html_links =
   ]
 
 let get_posts_route _request =
-  let posts_preview = !mem_posts_metadata in
+  let post_link ~name ~id = a ~a:[ a_href ("/posts/" ^ id) ] [ txt name ] in
 
-  let post_link ~name ~id = a ~a:[ a_href ("/post/" ^ id) ] [ txt name ] in
-
-  let posts_html =
+  let posts_html (posts_preview : Post.metadata list) =
     ul
       (List.map
          (fun post ->
+           let (Post_id raw_id) = post.id in
+           print_endline (Printf.sprintf "post uri %s" raw_id);
            li
              [
                div
@@ -148,60 +66,54 @@ let get_posts_route _request =
                      ~a:[ a_class [ "post-date" ] ]
                      [ txt (human_readable_date post.date) ];
                    span ~a:[ a_class [ "separator" ] ] [ txt "|" ];
-                   post_link ~name:post.title ~id:post.id;
+                   post_link ~name:post.title ~id:raw_id;
                  ];
              ])
          posts_preview)
   in
 
-  let page_html =
+  let page_html previews =
     html
       (head (title (txt "Posts")) common_html_links)
       (body
          [
            site_navbar ~active:"Blog";
-           div ~a:[ a_class [ "container" ] ] [ h1 [ txt "Blog" ]; posts_html ];
+           div
+             ~a:[ a_class [ "container" ] ]
+             [ h1 [ txt "Blog" ]; posts_html previews ];
          ])
   in
-  Dream.html (Format.asprintf "%a" (pp ()) page_html)
+
+  Blog.Db.all_posts_metadata () >>= fun previews ->
+  Dream.html (Format.asprintf "%a" (pp ()) (page_html previews))
 
 let get_post_route request =
   let id = Dream.param request "id" in
-  match List.find_opt (fun m -> m.id = id) !mem_posts_metadata with
-  | Some metadata -> (
-      post_content metadata.id >>= function
-      | Some (_, raw) -> (
-          match render_post metadata raw with
-          | Some post ->
-              let page =
-                html
-                  (head (title (txt post.metadata.title)) common_html_links)
-                  (body
+  Blog.Db.find_post (Post_id id) >>= function
+  | Some { metadata; content = `Html raw_content } ->
+      let page =
+        html
+          (head (title (txt metadata.title)) common_html_links)
+          (body
+             [
+               site_navbar ~active:"Blog";
+               div
+                 ~a:[ a_class [ "container" ] ]
+                 [
+                   div
+                     ~a:[ a_class [ "post-header" ] ]
                      [
-                       site_navbar ~active:"Blog";
-                       div
-                         ~a:[ a_class [ "container" ] ]
-                         [
-                           div
-                             ~a:[ a_class [ "post-header" ] ]
-                             [
-                               span
-                                 ~a:[ a_class [ "post-date" ] ]
-                                 [
-                                   txt (human_readable_date post.metadata.date);
-                                 ];
-                               h1
-                                 ~a:[ a_class [ "post-title" ] ]
-                                 [ txt post.metadata.title ];
-                             ];
-                           Unsafe.data post.html;
-                         ];
-                     ])
-              in
-              Dream.html (Format.asprintf "%a" (pp ()) page)
-          | None -> Dream.html ~status:`Not_Found "<h1>Render error</h1>")
-      | None -> Dream.html ~status:`Not_Found "<h1>Post not found</h1>")
-  | None -> Dream.html ~status:`Not_Found "<h1>Post not found</h1>"
+                       span
+                         ~a:[ a_class [ "post-date" ] ]
+                         [ txt (human_readable_date metadata.date) ];
+                       h1 ~a:[ a_class [ "post-title" ] ] [ txt metadata.title ];
+                     ];
+                   Unsafe.data (markdown_to_html raw_content);
+                 ];
+             ])
+      in
+      Dream.html (Format.asprintf "%a" (pp ()) page)
+  | None -> Dream.html ~status:`Not_Found "<h1>Render error</h1>"
 
 let get_about_route _request =
   let path = Filename.concat "static" "about.md" in
@@ -222,12 +134,15 @@ let get_about_route _request =
     (fun _ -> Dream.html ~status:`Not_Found "<h1>About page not found</h1>")
 
 let () =
-  let _ = Lwt.async (fun _ -> refresh_loop ()) in
-  Dream.run @@ Dream.logger
-  @@ Dream.router
-       [
-         Dream.get "/" get_about_route;
-         Dream.get "/posts" get_posts_route;
-         Dream.get "/post/:id" get_post_route;
-         Dream.get "/static/**" (Dream.static "static");
-       ]
+  Lwt_main.run
+    begin
+      Blog.Db.init () >>= fun () ->
+      Dream.serve @@ Dream.logger
+      @@ Dream.router
+           [
+             Dream.get "/" get_about_route;
+             Dream.get "/posts" get_posts_route;
+             Dream.get "/posts/:id" get_post_route;
+             Dream.get "/static/**" (Dream.static "static");
+           ]
+    end

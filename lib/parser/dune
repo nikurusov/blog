@@ -1,0 +1,5 @@
+(library
+ (name blog__parser)
+ (public_name blog.parser)
+ (libraries blog.model jekyll-format)
+ )
